@@ -76,8 +76,7 @@ namespace BLPTool
             will_be_loaded = plan.SceneKeys;
             targCatalogs = plan.Catalogs;
             Additive = additive;
-            if (SDKProjectPreferences.MarrowGameInstallPaths.Count > 0)
-                Bonelab_Folder = SDKProjectPreferences.MarrowGameInstallPaths[0];
+            Bonelab_Folder = GameInstallPath() ?? Bonelab_Folder;
         }
 
         void Start()
@@ -256,11 +255,24 @@ namespace BLPTool
                 RefreshKeys();
         }
 
+        /// <summary>First configured game install path. The SDK only loads its preferences lazily (and they are
+        /// unset right after a domain reload), so load them on demand rather than hitting its null instance.</summary>
+        static string GameInstallPath()
+        {
+            List<string> paths;
+            try { paths = SDKProjectPreferences.MarrowGameInstallPaths; }
+            catch (System.NullReferenceException)
+            {
+                SDKProjectPreferences.LoadFromFile();
+                paths = SDKProjectPreferences.MarrowGameInstallPaths;
+            }
+            return paths != null && paths.Count > 0 ? paths[0] : null;
+        }
+
         /// <summary>Keeps a hand-placed loader (Level Loader menu) in sync with its level field.</summary>
         void RefreshKeys()
         {
-            if (SDKProjectPreferences.MarrowGameInstallPaths.Count > 0)
-                Bonelab_Folder = SDKProjectPreferences.MarrowGameInstallPaths[0];
+            Bonelab_Folder = GameInstallPath() ?? Bonelab_Folder;
             // Only while the crate resolves: after a scene change the warehouse's crates may be unloaded,
             // and the keys we already have must survive that.
             if (level?.Crate is LevelCrate crate)

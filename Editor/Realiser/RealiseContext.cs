@@ -130,8 +130,15 @@ namespace BLPTool.Realise
             if (AssetDatabase.IsValidFolder(assetFolder)) return;
             string parent = Path.GetDirectoryName(assetFolder).Replace('\\', '/');
             EnsureFolder(parent);
-            AssetDatabase.CreateFolder(parent, Path.GetFileName(assetFolder));
+            // The folder may already exist on disk without being imported (e.g. made with the folder picker's
+            // "New folder"). CreateFolder would then silently create "<name> 1" instead, so create/import it directly.
+            Directory.CreateDirectory(Path.Combine(ProjectRoot, assetFolder));
+            AssetDatabase.ImportAsset(assetFolder, ImportAssetOptions.ForceSynchronousImport);
+            if (!AssetDatabase.IsValidFolder(assetFolder))
+                throw new IOException($"Couldn't create or import folder {assetFolder}");
         }
+
+        static string ProjectRoot => Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
     }
 }
 #endif
