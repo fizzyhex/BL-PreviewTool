@@ -27,15 +27,73 @@ namespace BLPTool
     public class LevelLoader : MonoBehaviour
     {
 #if UNITY_EDITOR
+        /// <summary>Keep already-open scenes/content; don't take over the camera, time or bundles.</summary>
+        [SerializeField] public bool Additive;
+        /// <summary>Created by BLPApi.PreviewLevel: removed again when play mode exits.</summary>
+        [SerializeField] public bool Transient;
+        /// <summary>True once every scene of the level has finished loading.</summary>
+        public bool Finished { get; private set; }
+
+        const string TimeScaleKey = "BLPTool.LevelLoader.TimeScale";
+
+        void OnDestroy() => RestoreTimeScale();
+
+        /// <summary>Undoes the freeze from Start (it would otherwise persist into project settings).</summary>
+        public static void RestoreTimeScale()
+        {
+            float saved = SessionState.GetFloat(TimeScaleKey, -1);
+            if (saved < 0) return;
+            Time.timeScale = saved;
+            SessionState.EraseFloat(TimeScaleKey);
+        }
+
+        /// <summary>Everything play mode needs to stream a level, as plain data.</summary>
+        public class LoadPlan
+        {
+            public Barcode Level;
+            public string[] SceneKeys;
+            public List<string> Catalogs;
+        }
+
+        /// <summary>
+        /// Resolves a level crate into a <see cref="LoadPlan"/>. Do this before any Single-mode scene change:
+        /// that unloads unused assets, which destroys the warehouse's in-memory crates.
+        /// </summary>
+        public static LoadPlan PlanFor(LevelCrate crate)
+        {
+            var keys = new List<string> { crate.MainAsset.AssetGUID };
+            keys.AddRange(crate.PersistentScenes.Select(s => s.AssetGUID));
+            keys.AddRange(crate.ChunkScenes.Select(s => s.AssetGUID));
+            var catalogs = typeof(AssetWarehouse).GetField("loadedCatalogs", UltEvents.UltEventUtils.AnyAccessBindings)
+                ?.GetValue(AssetWarehouse.Instance) as List<string>;
+            return new LoadPlan { Level = crate.Barcode, SceneKeys = keys.ToArray(), Catalogs = new List<string>(catalogs ?? new List<string>()) };
+        }
+
+        /// <summary>Points this loader at a level (edit mode, or play mode before Start).</summary>
+        public void Configure(LoadPlan plan, bool additive)
+        {
+            level = new CrateReferenceT<LevelCrate>(plan.Level);
+            will_be_loaded = plan.SceneKeys;
+            targCatalogs = plan.Catalogs;
+            Additive = additive;
+            if (SDKProjectPreferences.MarrowGameInstallPaths.Count > 0)
+                Bonelab_Folder = SDKProjectPreferences.MarrowGameInstallPaths[0];
+        }
+
         void Start()
         {
             if (!EditorApplication.isPlaying) return;
-            this.gameObject.AddComponent<Camera>();
-            
+            if (!Additive || Camera.main == null)
+                this.gameObject.AddComponent<Camera>();
 
             Texture.streamingTextureForceLoadAll = true;
-            Time.timeScale = 0;
-            AssetBundle.UnloadAllAssetBundles(true);
+            if (!Additive)
+            {
+                // Play-mode timeScale writes through to ProjectSettings/TimeManager.asset, so remember it for restore.
+                SessionState.SetFloat(TimeScaleKey, Time.timeScale);
+                Time.timeScale = 0;
+                AssetBundle.UnloadAllAssetBundles(true);
+            }
             DontDestroyOnLoad(gameObject);
             var prefunc = Addressables.InternalIdTransformFunc;
             Addressables.InternalIdTransformFunc = (location) =>
@@ -130,7 +188,8 @@ namespace BLPTool
             }
             else*/
             {
-                foreach (var guid in will_be_loaded)
+                print($"[BLPTool] Loading {will_be_loaded?.Length ?? 0} scene(s)");
+                foreach (var guid in will_be_loaded ?? new string[0])
                 {
                     //var loc = ((ResourceLocationMap)Addressables.ResourceLocators.First(loc => loc is ResourceLocationMap)).Locations.Values.First(v => v.First().ProviderId == guid);
                     await Task.Delay((int)(wait_between_loads*1000));
@@ -141,9 +200,19 @@ namespace BLPTool
                     );
                     loadingSubScenes.Add(tuple);
                     loadee.Completed += (a) => loadingSubScenes.Remove(tuple);
+                    handles.Add(loadee);
                 }
+                foreach (var handle in handles)
+                {
+                    await handle.Task;
+                    if (handle.Status != AsyncOperationStatus.Succeeded)
+                        Debug.LogError($"[BLPTool] Scene load failed: {handle.DebugName}\n{handle.OperationException}");
+                }
+                print($"[BLPTool] Level loaded: {handles.Count} scene(s)");
+                Finished = true;
             }
         }
+        readonly List<AsyncOperationHandle<SceneInstance>> handles = new();
         /*
         private List<string> LoadedScenes = new List<string>();
         private void OnLoad_Completed(AsyncOperationHandle<SceneInstance> obj)
@@ -184,22 +253,23 @@ namespace BLPTool
         private void Update()
         {
             if (!EditorApplication.isPlaying)
-            {
+                RefreshKeys();
+        }
+
+        /// <summary>Keeps a hand-placed loader (Level Loader menu) in sync with its level field.</summary>
+        void RefreshKeys()
+        {
+            if (SDKProjectPreferences.MarrowGameInstallPaths.Count > 0)
                 Bonelab_Folder = SDKProjectPreferences.MarrowGameInstallPaths[0];
-                if (level != null && level.Crate != null)
-                {
-                    int keyCount = level.Crate.PersistentScenes.Count + level.Crate.ChunkScenes.Count + 1;
-                    will_be_loaded ??= new string[keyCount];
-                    if (will_be_loaded.Length != keyCount)
-                        will_be_loaded = new string[keyCount];
-                    will_be_loaded[0] = level.Crate.MainAsset.AssetGUID;
-                    for (int i = 0; i < level.Crate.PersistentScenes.Count; i++)
-                        will_be_loaded[i + 1] = level.Crate.PersistentScenes[i].AssetGUID;
-                    for (int i = 0; i < level.Crate.ChunkScenes.Count; i++)
-                        will_be_loaded[level.Crate.PersistentScenes.Count + 1 + i] = level.Crate.ChunkScenes[i].AssetGUID;
-                }
-                Pallet.Barcode = new Barcode(level?.Crate?.Pallet?.Barcode);
-                targCatalogs = (List<string>)typeof(AssetWarehouse).GetField("loadedCatalogs", UltEvents.UltEventUtils.AnyAccessBindings).GetValue(AssetWarehouse.Instance);
+            // Only while the crate resolves: after a scene change the warehouse's crates may be unloaded,
+            // and the keys we already have must survive that.
+            if (level?.Crate is LevelCrate crate)
+            {
+                var plan = PlanFor(crate);
+                will_be_loaded = plan.SceneKeys;
+                targCatalogs = plan.Catalogs;
+                Pallet ??= new PalletReference();
+                Pallet.Barcode = new Barcode(crate.Pallet?.Barcode);
             }
         }
 #endif

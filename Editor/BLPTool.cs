@@ -29,11 +29,10 @@ namespace BLPTool
         }
         static BLPTool()
         {
-            // Ensure XR Package
-            Client.Add("https://github.com/holadivinus/BLXRComp.git");
-
             EditorApplication.update += OnUpdate;
-            AssetBundle.UnloadAllAssetBundles(true);
+            // Don't yank bundles out from under play mode (domain reload on enter-play would kill a running level preview)
+            if (!EditorApplication.isPlayingOrWillChangePlaymode)
+                AssetBundle.UnloadAllAssetBundles(true);
             SceneView.duringSceneGui += DuringSceneGui;
             EditorSceneManager.sceneSaving += OnSceneSaving;
             
