@@ -19,6 +19,22 @@ loading Marrow games, so the warehouse lists the game's pallets.
 
 `CONTEXT/CrateSpawner > (BLPTool) Realise Preview` realises a spawner's crate under it.
 
+## Asset Warehouse integration
+No Extended SDK changes needed: the fork extends the SDK's tree view and swaps it into open Asset Warehouse
+windows. It uses reflection on the window's private `treeViewAW`/`treeViewState` fields, and logs a warning
+and stays out of the way if those change.
+
+- **Installed Mods**: a group after External Pallets listing the game's pallet mods
+  (`LocalLow/Stress Level Zero/BONELAB/Mods`, overridable via the `BLPTool.ModsPath` EditorPref).
+  It's lazy, because 50-150 mods is normal:
+  - Expanding the group only reads each mod's `pallet.json` header.
+  - Expanding a mod loads that pallet into the warehouse. *Expand to load all* loads the rest.
+  - Search, "+" and Alt+click never load mods. The search text filters the unloaded mod rows.
+  - Loaded mods are reloaded after domain reloads and play mode.
+- **Preview Tool** (crate inspectors, under the header):
+  - **Preview** loads spawnables/avatars into the scene, or plays a level.
+  - **Realize** dumps the selection to a folder you pick (levels go through a play-mode capture).
+
 ## API (`BLPTool.BLPApi`, editor only)
 ```csharp
 // Realised, unsaved GameObject in the active scene. Assets go to Assets/BLPTool_Temp/<title>/, so it can be saved.
